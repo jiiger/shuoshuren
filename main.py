@@ -1,4 +1,4 @@
-import os
+﻿import os
 import time
 import json
 from mine.email_mine import email
@@ -17,17 +17,25 @@ DEFAULT_CONFIG = {
     "rate_limit_sleep": 600,  # 触发频率限制后暂停时间(秒)
     "max_consecutive_failures": 10,  # 连续发送失败多少次后终止
     "wait_for_live": True,  # 是否等主播开播后才开始发送（调试时可设 False）
+    "pause_long": 4,  # 句末标点(。！？)停顿秒数
+    "pause_short": 2,  # 句中标点(，、；)停顿秒数
 }
 
 
 def load_config():
-    """加载配置，如果不存在则创建默认配置"""
+    """加载配置：不存在则创建默认配置；已存在则与默认值合并，新增键自动补齐"""
     if not os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(DEFAULT_CONFIG, f, indent=4, ensure_ascii=False)
-        return DEFAULT_CONFIG
+        return dict(DEFAULT_CONFIG)
     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+        cfg = json.load(f)
+    # 默认值打底，文件值覆盖默认值；缺的键补上并写回，保证配置文件与代码同步
+    merged = dict(DEFAULT_CONFIG)
+    merged.update(cfg)
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(merged, f, indent=4, ensure_ascii=False)
+    return merged
 
 
 def load_book():
@@ -38,6 +46,33 @@ def load_book():
         content = f.read()
     # 去除所有空白字符
     return "".join(content.split())
+
+
+# 断句标点：弹幕尽量在标点处切断，让每条弹幕包含完整句子
+PUNCT = "，。！？；、……,.!?;:"
+
+
+def split_chunks(content, chunk_size):
+    """按标点断句切分：在 chunk_size 窗口内找最后一个标点，在标点处切断；
+    窗口内没有标点则在 chunk_size 处硬切，保证弹幕不超过长度上限"""
+    chunks = []
+    i = 0
+    n = len(content)
+    while i < n:
+        window = content[i : i + chunk_size]
+        # 找窗口内最后一个标点的位置（含英文标点）
+        last_punct = -1
+        for idx, ch in enumerate(window):
+            if ch in PUNCT:
+                last_punct = idx
+        if last_punct >= 0:
+            end = i + last_punct + 1  # 标点一并切到本条末尾
+            chunks.append(content[i:end])
+            i = end
+        else:
+            chunks.append(window)
+            i += chunk_size
+    return chunks
 
 
 def save_progress(remaining_text):
@@ -67,11 +102,12 @@ def main():
     global CONFIG
     CONFIG = load_config()
 
-    # 1. 加载文本并切分
+    # 1. 加载文本并按标点断句切分（窗口内找最后一个标点，尽量让每条弹幕含多个句子）
     content = load_book()
     chunk_size = CONFIG["chunk_size"]
-    chunks = [content[i : i + chunk_size] for i in range(0, len(content), chunk_size)]
+    chunks = split_chunks(content, chunk_size)
     total = len(chunks)
+    print(f"已按标点断句切分，共 {total} 条弹幕（每条上限 {chunk_size} 字）")
 
     if total == 0:
         print("book.txt 已读完，请放入新小说后重新运行")
@@ -146,7 +182,15 @@ def main():
                 # 发送成功
                 fail_streak = 0
                 i += 1
-                time.sleep(CONFIG["send_interval"])
+                # 按本条结尾标点类型决定额外停顿：句末(。！？)停久、句中(，、；)停短
+                last_char = chunk[-1] if chunk else ""
+                if last_char in "。！？!?":
+                    pause = CONFIG.get("pause_long", 4)
+                elif last_char in "，、；,;:":
+                    pause = CONFIG.get("pause_short", 2)
+                else:
+                    pause = 0
+                time.sleep(CONFIG["send_interval"] + pause)
     except KeyboardInterrupt:
         print("\n用户手动中断，保存进度...")
         save_progress("".join(chunks[i:]))
