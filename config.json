@@ -1,0 +1,9 @@
+{
+    "chunk_size": 20,
+    "send_interval": 5,
+    "poll_interval": 600,
+    "ban_sleep": 86400,
+    "rate_limit_sleep": 600,
+    "max_consecutive_failures": 10,
+    "wait_for_live": true
+}
